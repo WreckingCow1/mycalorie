@@ -1,4 +1,4 @@
-const CACHE = 'mycalorie-v5-navigation-fix';
+const CACHE = 'mycalorie-v6-recipe-book';
 const ASSETS = ['./', './index.html', './manifest.webmanifest', './icon.svg'];
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(ASSETS)).then(() => self.skipWaiting()));
