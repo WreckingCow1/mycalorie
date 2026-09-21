@@ -261,9 +261,12 @@ th,td{text-align:left;padding:9px;border-bottom:1px solid var(--border);font-siz
  <div class="card full">
   <div class="section-title"><h2>Weight progress</h2><span id="weightTrend" class="trend"></span></div>
   <div class="formgrid">
-   <div><label>Weight (kg)</label><input id="weightEntry" type="number" min="20" step="0.1"></div>
-   <div style="align-self:end"><button class="primary" onclick="saveWeight()">Save weight</button></div>
+   <div><label>Weigh-in date</label><input id="weightDate" type="date"></div>
+   <div><label>Weight (kg)</label><input id="weightEntry" type="number" min="20" step="0.1" placeholder="e.g. 80.5"></div>
+   <div class="wide"><button class="primary" onclick="saveWeight()">Save weekly weight</button></div>
   </div>
+  <div class="notice" style="margin-top:12px">For weekly tracking, enter one weigh-in for each week, preferably under similar conditions each time.</div>
+  <div id="weightSummary" class="statgrid" style="margin-top:16px"></div>
   <div id="weightChart" class="chart" style="margin-top:18px"></div>
   <div id="weightTable" style="margin-top:15px"></div>
  </div>
@@ -424,6 +427,7 @@ document.addEventListener("click",e=>{
 });
 
 function render(){
+ const wd=document.getElementById("weightDate");if(wd&&!wd.value)wd.value=today();
  const now=new Date(),t=getTarget(),tot=totals();
  document.getElementById("todayDate").textContent=now.toLocaleDateString(undefined,{weekday:"long",year:"numeric",month:"long",day:"numeric"});
  document.getElementById("dashDate").textContent=now.toLocaleDateString(undefined,{day:"numeric",month:"short",year:"numeric"});
@@ -627,26 +631,100 @@ function quickSelectByName(name,unit){
  selectFood(0);showTab("addfood");
 }
 function saveWeight(){
- const w=Number(document.getElementById("weightEntry").value);if(!w)return;
- state.weights.push({date:today(),weight:w});state.profile.weight=w;save();document.getElementById("weightEntry").value="";render();
+ const w=Number(document.getElementById("weightEntry").value);
+ const date=document.getElementById("weightDate").value||today();
+ if(!w||w<20){alert("Please enter a valid weight.");return}
+ state.weights=Array.isArray(state.weights)?state.weights:[];
+ const existing=state.weights.findIndex(x=>x.date===date);
+ if(existing>=0){
+  if(!confirm("There is already a weight recorded for this date. Replace it?"))return;
+  state.weights[existing]={date,weight:w};
+ }else{
+  state.weights.push({date,weight:w});
+ }
+ state.weights.sort((a,b)=>a.date.localeCompare(b.date));
+ state.profile.weight=w;
+ save();
+ document.getElementById("weightEntry").value="";
+ document.getElementById("weightDate").value=today();
+ render();
+ showTab("history");
 }
-function setHistoryDate(){
- const input=document.getElementById("historyDate");if(!input.value)input.value=today();renderSelectedDay();
+
+function renderWeightChart(){
+ const wt=[...state.weights].sort((a,b)=>a.date.localeCompare(b.date));
+ const recent=wt.slice(-12);
+ const chart=document.getElementById("weightChart");
+ const summary=document.getElementById("weightSummary");
+ if(!chart)return;
+
+ if(!recent.length){
+  chart.innerHTML='<div class="empty">Record your first weekly weight to start the graph.</div>';
+  if(summary)summary.innerHTML="";
+  return;
+ }
+
+ const values=recent.map(x=>Number(x.weight));
+ const min=Math.min(...values),max=Math.max(...values);
+ const goal=Number(state.profile.goalWeight||0);
+ const low=Math.floor((Math.min(min,goal||min)-1)*2)/2;
+ const high=Math.ceil((Math.max(max,goal||max)+1)*2)/2;
+ const range=Math.max(high-low,1);
+ const width=760,height=300,left=55,right=20,top=25,bottom=55;
+ const plotW=width-left-right,plotH=height-top-bottom;
+ const points=recent.map((x,i)=>{
+  const px=left+(recent.length===1?plotW/2:(i/(recent.length-1))*plotW);
+  const py=top+((high-x.weight)/range)*plotH;
+  return {x,px,py};
+ });
+ const path=points.length>1?points.map((p,i)=>(i?"L":"M")+p.px.toFixed(1)+" "+p.py.toFixed(1)).join(" "):"";
+ const yTicks=5;
+ let grid="";
+ for(let i=0;i<=yTicks;i++){
+  const value=high-(range*i/yTicks);
+  const y=top+(plotH*i/yTicks);
+  grid+=`<line x1="${left}" y1="${y}" x2="${width-right}" y2="${y}" stroke="currentColor" opacity=".12"/>
+  <text x="${left-8}" y="${y+4}" text-anchor="end" font-size="12" fill="currentColor" opacity=".7">${value.toFixed(1)}</text>`;
+ }
+ let goalLine="";
+ if(goal){
+  const gy=top+((high-goal)/range)*plotH;
+  goalLine=`<line x1="${left}" y1="${gy}" x2="${width-right}" y2="${gy}" stroke="currentColor" stroke-dasharray="6 5" opacity=".55"/>
+  <text x="${width-right}" y="${gy-7}" text-anchor="end" font-size="12" fill="currentColor">Goal ${goal.toFixed(1)} kg</text>`;
+ }
+ const labels=points.map(p=>`<text x="${p.px}" y="${height-24}" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">${p.x.date.slice(5)}</text>`).join("");
+ const dots=points.map(p=>`<circle cx="${p.px}" cy="${p.py}" r="5" fill="currentColor"><title>${p.x.date}: ${Number(p.x.weight).toFixed(1)} kg</title></circle>`).join("");
+ chart.innerHTML=`<div style="overflow-x:auto">
+ <svg viewBox="0 0 ${width} ${height}" width="100%" height="300" role="img" aria-label="Weight progress line graph">
+  ${grid}${goalLine}
+  <path d="${path}" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" opacity=".9"/>
+  ${dots}${labels}
+ </svg></div>
+ <div class="muted small">Showing the most recent ${recent.length} weigh-in${recent.length===1?"":"s"}. Hover over a point for the exact date and weight.</div>`;
+
+ const first=wt[0],last=wt[wt.length-1],change=first&&last?last.weight-first.weight:0;
+ const latest=last?last.weight:0;
+ const goalText=goal?`${(latest-goal).toFixed(1)} kg ${latest>goal?"above":"from"} goal`:"Set a goal weight in Profile";
+ summary.innerHTML=`
+  <div class="stat"><div class="label">Starting weight</div><div class="value">${first.weight.toFixed(1)} kg</div></div>
+  <div class="stat"><div class="label">Current weight</div><div class="value">${latest.toFixed(1)} kg</div></div>
+  <div class="stat"><div class="label">Change</div><div class="value">${change>0?"+":""}${change.toFixed(1)} kg</div></div>
+  <div class="stat"><div class="label">Goal</div><div class="value" style="font-size:18px">${goal?goal.toFixed(1)+" kg":"Not set"}</div></div>`;
+ document.getElementById("weightTrend").textContent=wt.length>1?`${change>0?"+":""}${change.toFixed(1)} kg since first entry`:"";
 }
+
 function renderHistory(){
- const wt=[...state.weights].sort((a,b)=>a.date.localeCompare(b.date)),recent=[...wt].slice(-8);
- const wc=document.getElementById("weightChart");
- if(recent.length){
-  const min=Math.min(...recent.map(x=>x.weight)),max=Math.max(...recent.map(x=>x.weight)),range=max-min||1;
-  wc.innerHTML=recent.map(x=>`<div class="chart-col"><div class="chart-value">${x.weight}kg</div><div class="chart-bar" style="height:${20+((x.weight-min)/range)*100}px"></div><div class="chart-label">${x.date.slice(5)}</div></div>`).join("");
- }else wc.innerHTML='<div class="empty" style="width:100%">Record a few weights to see your trend.</div>';
- const first=wt[0],last=wt[wt.length-1];
- document.getElementById("weightTrend").textContent=first&&last&&wt.length>1?`${(last.weight-first.weight).toFixed(1)} kg since first entry`:"";
+ const wt=[...state.weights].sort((a,b)=>a.date.localeCompare(b.date));
+ renderWeightChart();
  const days=[];for(let i=6;i>=0;i--){const d=new Date();d.setDate(d.getDate()-i);days.push({date:localDate(d),label:d.toLocaleDateString(undefined,{weekday:"short"}).slice(0,3)})}
  const cc=document.getElementById("calorieChart"),target=getTarget()?.target||0,maxCal=Math.max(target||0,...days.map(x=>totals(x.date).cal),1);
  cc.innerHTML=days.map(x=>`<div class="chart-col"><div class="chart-value">${totals(x.date).cal?Math.round(totals(x.date).cal):""}</div><div class="chart-bar" style="height:${Math.max(3,(totals(x.date).cal/maxCal)*110)}px"></div><div class="chart-label">${x.label}</div></div>`).join("");
  const wtTable=document.getElementById("weightTable");
- wtTable.innerHTML=wt.length?`<table><tr><th>Date</th><th>Weight</th></tr>${wt.slice().reverse().slice(0,20).map(x=>`<tr><td>${x.date}</td><td>${x.weight} kg</td></tr>`).join("")}</table>`:'<div class="empty">No weights recorded.</div>';
+ wtTable.innerHTML=wt.length?`<table><tr><th>Date</th><th>Weight</th><th>Change</th></tr>${wt.slice().reverse().slice(0,30).map((x,i,arr)=>{
+   const prev=arr[i+1];
+   const change=prev?(x.weight-prev.weight):null;
+   return `<tr><td>${x.date}</td><td>${Number(x.weight).toFixed(1)} kg</td><td>${change===null?"—":(change>0?"+":"")+change.toFixed(1)+" kg"}</td></tr>`;
+ }).join("")}</table>`:'<div class="empty">No weights recorded.</div>';
  const ds=Object.keys(state.logs).sort().reverse().slice(0,14);
  document.getElementById("calHistory").innerHTML=ds.length?`<table><tr><th>Date</th><th>Calories</th></tr>${ds.map(d=>`<tr><td>${d}</td><td>${Math.round(totals(d).cal)}</td></tr>`).join("")}</table>`:'<div class="empty">No calorie history yet.</div>';
 }
